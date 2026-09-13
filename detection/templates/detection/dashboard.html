@@ -1,0 +1,429 @@
+{% extends 'detection/base.html' %} {%block title %}Dashboard{% endblock %}
+{%block content %}
+<div class="main-layout">
+  <!-- BANNER CẢNH BÁO - ẩn mặc định, JS phía sau (websocket/polling) sẽ show khi có cheating -->
+  <div id="alert-banner" class="alert-banner hidden">
+    <span class="alert-dot"></span>
+    <span id="alert-text">Phát hiện hành vi gian lận</span>
+    <button class="alert-close" onclick="dismissAlert()">&times;</button>
+  </div>
+
+  <div class="content-grid">
+    <!-- ============ CỘT TRÁI: video to nhất + media ngang bên dưới ============ -->
+    <div class="left-col">
+      <div class="card video-card">
+        <div class="video-display" id="video-display">
+          {% if media_type == 'image' %}
+          <img
+            src="{{ media_url }}"
+            alt="Uploaded image"
+            id="sessionMediaImage"
+          />
+          {% elif media_type == 'video' %}
+          <video src="{{ media_url }}" controls id="sessionMediaVideo"></video>
+          {% endif %}
+
+          <p
+            class="camera-off-text {% if media_type %}hidden{% endif %}"
+            id="camera-off-text"
+          >
+            Camera Off
+          </p>
+
+          <!-- Dùng cho webcam/camera điện thoại kiểu "virtual webcam" (DroidCam/Iriun) -->
+          <video
+            id="liveCameraFeed"
+            autoplay
+            playsinline
+            class="hidden"
+          ></video>
+
+          <!-- Dùng cho IP Camera app (stream qua URL WiFi) -->
+          <img id="ipCameraFeed" class="hidden" alt="IP Camera stream" />
+        </div>
+        <div class="video-controls">
+          <label class="toggle-label">
+            Enable Detection
+            <input type="checkbox" disabled />
+          </label>
+          <a href="{% url 'classroom_map' %}" class="btn-location-link">
+            Xem sơ đồ toàn bộ lớp
+          </a>
+        </div>
+      </div>
+
+      <div class="card media-row-card">
+        <!-- Upload ảnh -->
+        <form
+          id="imageForm"
+          method="post"
+          enctype="multipart/form-data"
+          action="{% url 'upload_image' %}"
+        >
+          {% csrf_token %}
+          <input
+            type="file"
+            name="image"
+            accept="image/*"
+            id="imageInput"
+            style="display: none"
+            onchange="document.getElementById('imageForm').submit()"
+          />
+          <button type="button" class="btn-blue" onclick="prepareUploadImage()">
+            🖼 Image
+          </button>
+        </form>
+
+        <!-- Upload video -->
+        <form
+          id="videoForm"
+          method="post"
+          enctype="multipart/form-data"
+          action="{% url 'upload_video' %}"
+        >
+          {% csrf_token %}
+          <input
+            type="file"
+            name="video"
+            accept="video/*"
+            id="videoInput"
+            style="display: none"
+            onchange="validateVideoBeforeUpload(this)"
+          />
+          <button type="button" class="btn-blue" onclick="prepareUploadVideo()">
+            🎬 Video
+          </button>
+        </form>
+
+        <!-- Camera: 1 nút, mở panel chọn nguồn (webcam thật / camera điện thoại) -->
+        <button type="button" class="btn-blue" onclick="openCameraModal()">
+          📷 Camera
+        </button>
+
+        <!-- Save: đẩy file hiện tại lên Cloudinary -->
+        <!-- 🔸 TODO: Save - sẽ tích hợp Cloudinary ở giai đoạn sau -->
+        <button
+          type="button"
+          class="btn-blue btn-clear"
+          disabled
+          title="Chưa tích hợp - sẽ làm sau"
+        >
+          💾 Save
+        </button>
+
+        <!-- Clear -->
+        <a
+          href="{% url 'dashboard' %}"
+          class="btn-blue btn-clear"
+        >🗑 Clear</a>
+      </div>
+    </div>
+
+    <!-- ============ CỘT PHẢI: trên nhỏ (threshold + info tạm), dưới to (bảng log) ============ -->
+    <div class="right-col">
+      <div class="card right-top-card">
+        <div class="threshold-block">
+          <span class="threshold-label">Threshold</span>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value="{{ confidence_threshold }}"
+            disabled
+          />
+          <span class="threshold-note">Sẽ hoàn thiện sau</span>
+        </div>
+
+        <!-- 🔸 Các số liệu bên dưới là placeholder tạm, chưa chốt hiển thị -->
+        <div class="quick-info">
+          <div class="info-item">
+            <span>Total Target</span>
+            <strong>{{ total_target }}</strong>
+          </div>
+          <div class="info-item">
+            <span>FPS</span>
+            <strong>{{ fps }}</strong>
+          </div>
+          <div class="info-item">
+            <span>Runtime</span>
+            <strong>{{ runtime }}s</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="card log-card">
+        <table class="log-table">
+          <thead>
+            <tr>
+              <th>No</th>
+              <th>Location</th>
+              <th>Behaviour</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for d in detections %}
+            <tr
+              class="{% if d.behaviour|lower == 'cheating' %}row-cheating{% endif %}"
+            >
+              <td>{{ d.no }}</td>
+              <td>
+                <button
+                  class="btn-location-link"
+                  onclick="openLocationModal('{{ d.no }}', '{{ d.location|default:d.no }}')"
+                >
+                  Xem vị trí
+                </button>
+              </td>
+              <td>
+                <span class="badge badge-{{ d.behaviour|lower }}"
+                  >{{ d.behaviour }}</span
+                >
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: xem nhanh vị trí 1 học sinh, không rời khỏi trang -->
+  <div
+    id="location-modal"
+    class="modal-overlay hidden"
+    onclick="closeLocationModal(event)"
+  >
+    <div class="modal-box" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>Vị trí trong lớp</h3>
+        <button class="modal-close" onclick="closeLocationModal()">
+          &times;
+        </button>
+      </div>
+      <iframe id="location-iframe" class="modal-iframe" src=""></iframe>
+    </div>
+  </div>
+  <!-- POPUP: Chọn nguồn Camera -->
+  <div
+    id="cameraModalOverlay"
+    class="modal-overlay hidden"
+    onclick="closeCameraModal(event)"
+  >
+    <div class="modal-box camera-modal-box" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>📷 Chọn nguồn Camera</h3>
+        <button class="modal-close" onclick="closeCameraModal()">
+          &times;
+        </button>
+      </div>
+      <div class="modal-body">
+        <label>Webcam / Camera điện thoại (qua DroidCam, Iriun...):</label>
+        <select id="cameraSelect"></select>
+        <button
+          type="button"
+          class="btn-blue btn-full"
+          onclick="startSelectedCamera()"
+        >
+          Bắt đầu
+        </button>
+
+        <hr />
+
+        <label
+          >Hoặc dùng app IP Camera trên điện thoại (nhập URL stream):</label
+        >
+        <input
+          type="text"
+          id="ipCameraUrl"
+          placeholder="http://192.168.1.5:8080/video"
+        />
+        <button
+          type="button"
+          class="btn-blue btn-full"
+          onclick="startIpCamera()"
+        >
+          Kết nối
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function openLocationModal(studentId, location) {
+    const modal = document.getElementById("location-modal");
+    const iframe = document.getElementById("location-iframe");
+    iframe.src =
+      "{% url 'classroom_map' %}?highlight=" + encodeURIComponent(studentId);
+    modal.classList.remove("hidden");
+  }
+  function closeLocationModal(e) {
+    if (e && e.target.id !== "location-modal") return;
+    document.getElementById("location-modal").classList.add("hidden");
+    document.getElementById("location-iframe").src = "";
+  }
+  function dismissAlert() {
+    document.getElementById("alert-banner").classList.add("hidden");
+  }
+  // TODO: khi backend realtime bắn event "cheating" mới (qua WebSocket/polling),
+  // gọi hàm này để hiện banner:
+  function showCheatingAlert(text) {
+    document.getElementById("alert-text").textContent =
+      text || "Phát hiện hành vi gian lận";
+    document.getElementById("alert-banner").classList.remove("hidden");
+  }
+</script>
+
+<script>
+  let currentStream = null; // giữ tham chiếu stream đang chạy để tắt khi cần
+
+  // ============ RESET: dọn sạch mọi nguồn hiển thị trước khi bật nguồn mới ============
+  function resetActiveMedia() {
+    // Tắt webcam/camera điện thoại nếu đang chạy
+    if (currentStream) {
+      currentStream.getTracks().forEach((track) => track.stop());
+      currentStream = null;
+    }
+    const liveFeed = document.getElementById("liveCameraFeed");
+    liveFeed.srcObject = null;
+    liveFeed.classList.add("hidden");
+
+    // Tắt IP Camera nếu đang chạy
+    const ipFeed = document.getElementById("ipCameraFeed");
+    ipFeed.src = "";
+    ipFeed.classList.add("hidden");
+
+    // Ẩn video/ảnh đã upload từ session (nếu có)
+    const sessionImg = document.getElementById("sessionMediaImage");
+    const sessionVideo = document.getElementById("sessionMediaVideo");
+    if (sessionImg) sessionImg.classList.add("hidden");
+    if (sessionVideo) {
+      sessionVideo.pause();
+      sessionVideo.classList.add("hidden");
+    }
+
+    // Hiện lại chữ "Camera Off" mặc định
+    document.getElementById("camera-off-text").classList.remove("hidden");
+  }
+
+  // ============ Nút Image/Video: dọn media cũ trước khi cho chọn file mới ============
+  function prepareUploadImage() {
+    resetActiveMedia();
+    document.getElementById("imageInput").click();
+  }
+  function prepareUploadVideo() {
+    resetActiveMedia();
+    document.getElementById("videoInput").click();
+  }
+
+  // ============ Kiểm tra video trước khi upload (dung lượng + thời lượng) ============
+  const MAX_VIDEO_SIZE_MB = 100;
+  const MAX_VIDEO_DURATION_SEC = 1800;
+
+  function validateVideoBeforeUpload(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    // Kiểm tra dung lượng
+    const sizeMB = file.size / (1024 * 1024);
+    if (sizeMB > MAX_VIDEO_SIZE_MB) {
+      alert(
+        `Video quá lớn (${sizeMB.toFixed(1)}MB). Vui lòng chọn video dưới ${MAX_VIDEO_SIZE_MB}MB.`,
+      );
+      input.value = "";
+      return;
+    }
+
+    // Kiểm tra thời lượng bằng cách load thử metadata video
+    const videoEl = document.createElement("video");
+    videoEl.preload = "metadata";
+
+    videoEl.onloadedmetadata = function () {
+      window.URL.revokeObjectURL(videoEl.src);
+      if (videoEl.duration > MAX_VIDEO_DURATION_SEC) {
+        alert(
+          `Video dài ${Math.round(videoEl.duration)}s, vượt quá ${MAX_VIDEO_DURATION_SEC}s cho phép. Vui lòng cắt ngắn video.`,
+        );
+        input.value = "";
+      } else {
+        document.getElementById("videoForm").submit();
+      }
+    };
+
+    // Fallback: nếu trình duyệt không đọc được metadata (hiếm gặp), vẫn cho submit bình thường
+    videoEl.onerror = function () {
+      document.getElementById("videoForm").submit();
+    };
+
+    videoEl.src = URL.createObjectURL(file);
+  }
+
+  // ============ Modal Camera ============
+  function openCameraModal() {
+    document.getElementById("cameraModalOverlay").classList.remove("hidden");
+    populateCameraList();
+  }
+  function closeCameraModal(e) {
+    if (e && e.target.id !== "cameraModalOverlay") return;
+    document.getElementById("cameraModalOverlay").classList.add("hidden");
+  }
+
+  async function populateCameraList() {
+    try {
+      await navigator.mediaDevices.getUserMedia({ video: true });
+    } catch (e) {
+      console.warn("Chưa được cấp quyền camera:", e);
+    }
+
+    const select = document.getElementById("cameraSelect");
+    select.innerHTML = "";
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const videoInputs = devices.filter((d) => d.kind === "videoinput");
+
+    videoInputs.forEach((device, index) => {
+      const option = document.createElement("option");
+      option.value = device.deviceId;
+      option.text = device.label || `Camera ${index + 1}`;
+      select.appendChild(option);
+    });
+  }
+
+  async function startSelectedCamera() {
+    resetActiveMedia(); // dọn sạch trước khi bật nguồn mới
+
+    const deviceId = document.getElementById("cameraSelect").value;
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: deviceId
+        ? {
+            deviceId: { exact: deviceId },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          }
+        : { width: { ideal: 1280 }, height: { ideal: 720 } },
+    });
+    currentStream = stream;
+
+    const videoEl = document.getElementById("liveCameraFeed");
+    videoEl.srcObject = stream;
+    videoEl.classList.remove("hidden");
+    document.getElementById("camera-off-text").classList.add("hidden");
+
+    closeCameraModal();
+  }
+
+  function startIpCamera() {
+    const url = document.getElementById("ipCameraUrl").value.trim();
+    if (!url) return;
+
+    resetActiveMedia(); // dọn sạch trước khi bật nguồn mới
+
+    const imgEl = document.getElementById("ipCameraFeed");
+    imgEl.src = url;
+    imgEl.classList.remove("hidden");
+    document.getElementById("camera-off-text").classList.add("hidden");
+
+    closeCameraModal();
+  }
+</script>
+{% endblock %}
