@@ -84,6 +84,15 @@ body {
   object-fit: contain;
 }
 
+.video-display canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none; /* để click xuyên qua canvas, không chặn tương tác khác nếu có sau này */
+}
+
 .video-controls {
   display: flex;
   justify-content: space-between;
@@ -207,17 +216,16 @@ body {
   font-weight: bold;
   display: inline-block;
 }
-.badge-cheating {
+.badge-phone_use {
   background: #dc3545;
   color: #ffffff;
   box-shadow: 0 0 8px rgba(220, 53, 69, 0.4);
 }
-.badge-normal {
+.badge-no_cheating {
   background: #e2e3e5;
   color: #383d41;
 }
-.badge-looking_around,
-.badge-looking-around {
+.badge-looking_around {
   background: #4da3ff;
   color: #ffffff;
 }
@@ -378,4 +386,37 @@ button.btn-location-link {
 .camera-modal-box {
   max-width: 420px;
   height: auto;
+}
+
+.detail-modal-box {
+  max-width: 480px;
+  max-height: 85vh;
+  height: auto;
+}
+.detail-modal-box .modal-body {
+  overflow-y: auto;
+  max-height: calc(85vh - 60px); /* trừ chiều cao modal-header */
+}
+.detail-modal-img {
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  background: #001f3f;
+  border-radius: 8px;
+  margin-bottom: 14px;
+}
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f4f8;
+  font-size: 14px;
+}
+.detail-row span {
+  color: #5b6b7c;
+}
+.detail-modal-note {
+  margin-top: 14px;
+  font-size: 12px;
+  color: #8895a7;
 }

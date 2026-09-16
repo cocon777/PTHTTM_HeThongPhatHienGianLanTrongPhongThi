@@ -19,6 +19,7 @@
             alt="Uploaded image"
             id="sessionMediaImage"
           />
+          <canvas id="bboxOverlayCanvas"></canvas>
           {% elif media_type == 'video' %}
           <video src="{{ media_url }}" controls id="sessionMediaVideo"></video>
           {% endif %}
@@ -112,10 +113,7 @@
         </button>
 
         <!-- Clear -->
-        <a
-          href="{% url 'dashboard' %}"
-          class="btn-blue btn-clear"
-        >🗑 Clear</a>
+        <a href="{% url 'dashboard' %}" class="btn-blue btn-clear">🗑 Clear</a>
       </div>
     </div>
 
@@ -161,6 +159,7 @@
               <th>Behaviour</th>
             </tr>
           </thead>
+          {% comment %}
           <tbody>
             {% for d in detections %}
             <tr
@@ -183,25 +182,75 @@
             </tr>
             {% endfor %}
           </tbody>
+          {% endcomment %}
+          <tbody>
+            {% for d in detections %}
+            <tr
+              class="{% if d.behaviour_code == 'phone_use' %}row-cheating{% endif %}"
+            >
+              <td>{{ d.no }}</td>
+              <td>
+                <button
+                  class="btn-location-link"
+                  data-img="{{ d.snapshot_url }}"
+                  data-time="{{ d.detected_time_display }}"
+                  data-behaviour="{{ d.behaviour }}"
+                  data-confidence="{{ d.confidence_display }}"
+                  data-coordinate="{{ d.coordinate }}"
+                  onclick="openDetailModal(this)"
+                >
+                  Xem chi tiết
+                </button>
+              </td>
+              <td>
+                <span class="badge badge-{{ d.behaviour_code }}"
+                  >{{ d.behaviour }}</span
+                >
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
         </table>
       </div>
     </div>
   </div>
 
-  <!-- MODAL: xem nhanh vị trí 1 học sinh, không rời khỏi trang -->
+  <!-- MODAL: xem chi tiết 1 lần phát hiện (ảnh + thời điểm + thông số) -->
   <div
-    id="location-modal"
+    id="detail-modal"
     class="modal-overlay hidden"
-    onclick="closeLocationModal(event)"
+    onclick="closeDetailModal(event)"
   >
-    <div class="modal-box" onclick="event.stopPropagation()">
+    <div class="modal-box detail-modal-box" onclick="event.stopPropagation()">
       <div class="modal-header">
-        <h3>Vị trí trong lớp</h3>
-        <button class="modal-close" onclick="closeLocationModal()">
+        <h3>Chi tiết phát hiện</h3>
+        <button class="modal-close" onclick="closeDetailModal()">
           &times;
         </button>
       </div>
-      <iframe id="location-iframe" class="modal-iframe" src=""></iframe>
+      <div class="modal-body">
+        <img
+          id="detail-modal-img"
+          class="detail-modal-img hidden"
+          alt="Ảnh chụp hành vi"
+        />
+        <div class="detail-row">
+          <span>Thời điểm</span><strong id="detail-modal-time">—</strong>
+        </div>
+        <div class="detail-row">
+          <span>Hành vi</span><strong id="detail-modal-behaviour">—</strong>
+        </div>
+        <div class="detail-row">
+          <span>Độ tin cậy</span><strong id="detail-modal-confidence">—</strong>
+        </div>
+        <div class="detail-row">
+          <span>Toạ độ (bbox)</span
+          ><strong id="detail-modal-coordinate">—</strong>
+        </div>
+        <p class="detail-modal-note">
+          🔸 Sơ đồ vị trí trong lớp sẽ thêm vào đây ở giai đoạn sau.
+        </p>
+      </div>
     </div>
   </div>
   <!-- POPUP: Chọn nguồn Camera -->
@@ -248,20 +297,37 @@
       </div>
     </div>
   </div>
+  {{ detections_for_overlay|json_script:"detections-data" }}
 </div>
 
 <script>
-  function openLocationModal(studentId, location) {
-    const modal = document.getElementById("location-modal");
-    const iframe = document.getElementById("location-iframe");
-    iframe.src =
-      "{% url 'classroom_map' %}?highlight=" + encodeURIComponent(studentId);
+  function openDetailModal(btn) {
+    const modal = document.getElementById("detail-modal");
+    const img = document.getElementById("detail-modal-img");
+    const imgUrl = btn.dataset.img;
+
+    if (imgUrl) {
+      img.src = imgUrl;
+      img.classList.remove("hidden");
+    } else {
+      img.classList.add("hidden");
+    }
+
+    document.getElementById("detail-modal-time").textContent =
+      btn.dataset.time || "—";
+    document.getElementById("detail-modal-behaviour").textContent =
+      btn.dataset.behaviour || "—";
+    document.getElementById("detail-modal-confidence").textContent =
+      btn.dataset.confidence || "—";
+    document.getElementById("detail-modal-coordinate").textContent =
+      btn.dataset.coordinate || "—";
+
     modal.classList.remove("hidden");
   }
-  function closeLocationModal(e) {
-    if (e && e.target.id !== "location-modal") return;
-    document.getElementById("location-modal").classList.add("hidden");
-    document.getElementById("location-iframe").src = "";
+
+  function closeDetailModal(e) {
+    if (e && e.target.id !== "detail-modal") return;
+    document.getElementById("detail-modal").classList.add("hidden");
   }
   function dismissAlert() {
     document.getElementById("alert-banner").classList.add("hidden");
@@ -425,5 +491,95 @@
 
     closeCameraModal();
   }
+</script>
+
+{% comment %} bbox màu trên ảnh kết quả {% endcomment %}
+<script>
+  const BEHAVIOUR_COLOR_MAP = {
+    phone_use: "#dc3545",
+    looking_around: "#4da3ff",
+    no_cheating: "#383d41",
+  };
+
+  function drawBboxOverlay() {
+    const img = document.getElementById("sessionMediaImage");
+    const canvas = document.getElementById("bboxOverlayCanvas");
+    const dataEl = document.getElementById("detections-data");
+    if (!img || !canvas || !dataEl) return;
+
+    const detections = JSON.parse(dataEl.textContent);
+    if (!detections.length) return;
+
+    const container = img.parentElement;
+    const containerW = container.clientWidth;
+    const containerH = container.clientHeight;
+
+    canvas.width = containerW;
+    canvas.height = containerH;
+
+    const naturalW = img.naturalWidth;
+    const naturalH = img.naturalHeight;
+    if (!naturalW || !naturalH) return;
+
+    // Tính vùng ảnh thật sự hiển thị bên trong khung (vì dùng object-fit: contain nên có viền đệm)
+    const containerRatio = containerW / containerH;
+    const imageRatio = naturalW / naturalH;
+    let renderW, renderH, offsetX, offsetY;
+
+    if (imageRatio > containerRatio) {
+      renderW = containerW;
+      renderH = containerW / imageRatio;
+      offsetX = 0;
+      offsetY = (containerH - renderH) / 2;
+    } else {
+      renderH = containerH;
+      renderW = containerH * imageRatio;
+      offsetX = (containerW - renderW) / 2;
+      offsetY = 0;
+    }
+
+    const scaleX = renderW / naturalW;
+    const scaleY = renderH / naturalH;
+
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    detections.forEach(function (d) {
+      const [xmin, ymin, xmax, ymax] = d.bbox;
+      const x = offsetX + xmin * scaleX;
+      const y = offsetY + ymin * scaleY;
+      const w = (xmax - xmin) * scaleX;
+      const h = (ymax - ymin) * scaleY;
+      const color = BEHAVIOUR_COLOR_MAP[d.behaviour_code] || "#ffffff";
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, w, h);
+
+      ctx.font = "bold 13px 'Segoe UI', sans-serif";
+      const label = d.behaviour;
+      const textWidth = ctx.measureText(label).width;
+      const labelPadding = 4;
+      const labelHeight = 18;
+      // Nếu box quá sát mép trên, vẽ nhãn xuống bên trong thay vì tràn ra ngoài khung
+      const labelY = y - labelHeight < 0 ? y : y - labelHeight;
+
+      ctx.fillStyle = color;
+      ctx.fillRect(x, labelY, textWidth + labelPadding * 2, labelHeight);
+
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(label, x + labelPadding, labelY + labelHeight - 5);
+    });
+  }
+
+  const overlayImg = document.getElementById("sessionMediaImage");
+  if (overlayImg) {
+    if (overlayImg.complete) {
+      drawBboxOverlay();
+    } else {
+      overlayImg.addEventListener("load", drawBboxOverlay);
+    }
+  }
+  window.addEventListener("resize", drawBboxOverlay);
 </script>
 {% endblock %}
