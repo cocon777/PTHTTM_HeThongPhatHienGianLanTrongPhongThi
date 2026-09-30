@@ -4,7 +4,7 @@
   <!-- BANNER CẢNH BÁO - ẩn mặc định, JS phía sau (websocket/polling) sẽ show khi có cheating -->
   <div id="alert-banner" class="alert-banner hidden">
     <span class="alert-dot"></span>
-    <span id="alert-text">Phát hiện hành vi gian lận</span>
+    <span id="alert-text">Cheating behaviour detected</span>
     <button class="alert-close" onclick="dismissAlert()">&times;</button>
   </div>
 
@@ -39,16 +39,23 @@
             class="hidden"
           ></video>
 
-          <!-- Dùng cho IP Camera app (stream qua URL WiFi) -->
           <img id="ipCameraFeed" class="hidden" alt="IP Camera stream" />
+          <canvas id="webcamOverlayCanvas" class="hidden"></canvas>
         </div>
         <div class="video-controls">
-          <label class="toggle-label">
-            Enable Detection
-            <input type="checkbox" disabled />
+          <label class="switch-label">
+            <span class="switch">
+              <input
+                type="checkbox"
+                id="enableDetectionCheckbox"
+                onchange="toggleWebcamDetection(this.checked)"
+              />
+              <span class="switch-slider"></span>
+            </span>
+            Cheating Detection
           </label>
           <a href="{% url 'classroom_map' %}" class="btn-location-link">
-            Xem sơ đồ toàn bộ lớp
+            View Classroom Map
           </a>
         </div>
       </div>
@@ -62,6 +69,11 @@
           action="{% url 'upload_image' %}"
         >
           {% csrf_token %}
+          <input
+            type="hidden"
+            name="confidence_threshold"
+            id="thresholdInputImage"
+          />
           <input
             type="file"
             name="image"
@@ -83,6 +95,11 @@
           action="{% url 'upload_video' %}"
         >
           {% csrf_token %}
+          <input
+            type="hidden"
+            name="confidence_threshold"
+            id="thresholdInputVideo"
+          />
           <input
             type="file"
             name="video"
@@ -124,13 +141,18 @@
           <span class="threshold-label">Threshold</span>
           <input
             type="range"
+            id="thresholdSlider"
             min="0"
             max="1"
             step="0.01"
             value="{{ confidence_threshold }}"
-            disabled
+            oninput="
+              document.getElementById('thresholdValue').textContent = this.value
+            "
           />
-          <span class="threshold-note">Sẽ hoàn thiện sau</span>
+          <span class="threshold-note" id="thresholdValue"
+            >{{ confidence_threshold }}</span
+          >
         </div>
 
         <!-- 🔸 Các số liệu bên dưới là placeholder tạm, chưa chốt hiển thị -->
@@ -155,34 +177,12 @@
           <thead>
             <tr>
               <th>No</th>
-              <th>Location</th>
               <th>Behaviour</th>
+              <th>Time</th>
+              <th>Confidence</th>
+              <th>Detail</th>
             </tr>
           </thead>
-          {% comment %}
-          <tbody>
-            {% for d in detections %}
-            <tr
-              class="{% if d.behaviour|lower == 'cheating' %}row-cheating{% endif %}"
-            >
-              <td>{{ d.no }}</td>
-              <td>
-                <button
-                  class="btn-location-link"
-                  onclick="openLocationModal('{{ d.no }}', '{{ d.location|default:d.no }}')"
-                >
-                  Xem vị trí
-                </button>
-              </td>
-              <td>
-                <span class="badge badge-{{ d.behaviour|lower }}"
-                  >{{ d.behaviour }}</span
-                >
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-          {% endcomment %}
           <tbody>
             {% for d in detections %}
             <tr
@@ -190,8 +190,17 @@
             >
               <td>{{ d.no }}</td>
               <td>
+                <span class="badge badge-{{ d.behaviour_code }}"
+                  >{{ d.behaviour }}</span
+                >
+              </td>
+              <td class="cell-time">{{ d.detected_time_display }}</td>
+              <td>{{ d.confidence_display }}</td>
+              <td>
                 <button
-                  class="btn-location-link"
+                  type="button"
+                  class="btn-icon"
+                  title="View details"
                   data-img="{{ d.snapshot_url }}"
                   data-time="{{ d.detected_time_display }}"
                   data-behaviour="{{ d.behaviour }}"
@@ -199,13 +208,20 @@
                   data-coordinate="{{ d.coordinate }}"
                   onclick="openDetailModal(this)"
                 >
-                  Xem chi tiết
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="22"
+                    height="22"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
                 </button>
-              </td>
-              <td>
-                <span class="badge badge-{{ d.behaviour_code }}"
-                  >{{ d.behaviour }}</span
-                >
               </td>
             </tr>
             {% endfor %}
@@ -223,7 +239,7 @@
   >
     <div class="modal-box detail-modal-box" onclick="event.stopPropagation()">
       <div class="modal-header">
-        <h3>Chi tiết phát hiện</h3>
+        <h3>Detection Details</h3>
         <button class="modal-close" onclick="closeDetailModal()">
           &times;
         </button>
@@ -232,23 +248,23 @@
         <img
           id="detail-modal-img"
           class="detail-modal-img hidden"
-          alt="Ảnh chụp hành vi"
+          alt="Behaviour snapshot"
         />
         <div class="detail-row">
-          <span>Thời điểm</span><strong id="detail-modal-time">—</strong>
+          <span>Time</span><strong id="detail-modal-time">—</strong>
         </div>
         <div class="detail-row">
-          <span>Hành vi</span><strong id="detail-modal-behaviour">—</strong>
+          <span>Behaviour</span><strong id="detail-modal-behaviour">—</strong>
         </div>
         <div class="detail-row">
-          <span>Độ tin cậy</span><strong id="detail-modal-confidence">—</strong>
+          <span>Confidence</span><strong id="detail-modal-confidence">—</strong>
         </div>
         <div class="detail-row">
-          <span>Toạ độ (bbox)</span
+          <span>Coordinates (bbox)</span
           ><strong id="detail-modal-coordinate">—</strong>
         </div>
         <p class="detail-modal-note">
-          🔸 Sơ đồ vị trí trong lớp sẽ thêm vào đây ở giai đoạn sau.
+          🔸 The classroom seat map will be added here in a later phase.
         </p>
       </div>
     </div>
@@ -261,27 +277,25 @@
   >
     <div class="modal-box camera-modal-box" onclick="event.stopPropagation()">
       <div class="modal-header">
-        <h3>📷 Chọn nguồn Camera</h3>
+        <h3>📷 Select Camera Source</h3>
         <button class="modal-close" onclick="closeCameraModal()">
           &times;
         </button>
       </div>
       <div class="modal-body">
-        <label>Webcam / Camera điện thoại (qua DroidCam, Iriun...):</label>
+        <label>Webcam / phone camera (via DroidCam, Iriun...):</label>
         <select id="cameraSelect"></select>
         <button
           type="button"
           class="btn-blue btn-full"
           onclick="startSelectedCamera()"
         >
-          Bắt đầu
+          Start
         </button>
 
         <hr />
 
-        <label
-          >Hoặc dùng app IP Camera trên điện thoại (nhập URL stream):</label
-        >
+        <label>Or use an IP Camera app (enter stream URL):</label>
         <input
           type="text"
           id="ipCameraUrl"
@@ -292,7 +306,7 @@
           class="btn-blue btn-full"
           onclick="startIpCamera()"
         >
-          Kết nối
+          Connect
         </button>
       </div>
     </div>
@@ -336,7 +350,7 @@
   // gọi hàm này để hiện banner:
   function showCheatingAlert(text) {
     document.getElementById("alert-text").textContent =
-      text || "Phát hiện hành vi gian lận";
+      text || "Cheating behaviour detected";
     document.getElementById("alert-banner").classList.remove("hidden");
   }
 </script>
@@ -359,6 +373,14 @@
     const ipFeed = document.getElementById("ipCameraFeed");
     ipFeed.src = "";
     ipFeed.classList.add("hidden");
+
+    document.getElementById("webcamOverlayCanvas").classList.add("hidden");
+    if (webcamIntervalId) {
+      clearInterval(webcamIntervalId);
+      webcamIntervalId = null;
+    }
+    const checkbox = document.getElementById("enableDetectionCheckbox");
+    if (checkbox) checkbox.checked = false;
 
     // Ẩn video/ảnh đã upload từ session (nếu có)
     const sessionImg = document.getElementById("sessionMediaImage");
@@ -395,7 +417,7 @@
     const sizeMB = file.size / (1024 * 1024);
     if (sizeMB > MAX_VIDEO_SIZE_MB) {
       alert(
-        `Video quá lớn (${sizeMB.toFixed(1)}MB). Vui lòng chọn video dưới ${MAX_VIDEO_SIZE_MB}MB.`,
+        `Video is too large (${sizeMB.toFixed(1)}MB). Please choose a video under ${MAX_VIDEO_SIZE_MB}MB.`,
       );
       input.value = "";
       return;
@@ -409,7 +431,7 @@
       window.URL.revokeObjectURL(videoEl.src);
       if (videoEl.duration > MAX_VIDEO_DURATION_SEC) {
         alert(
-          `Video dài ${Math.round(videoEl.duration)}s, vượt quá ${MAX_VIDEO_DURATION_SEC}s cho phép. Vui lòng cắt ngắn video.`,
+          `Video is ${Math.round(videoEl.duration)}s long, exceeding the ${MAX_VIDEO_DURATION_SEC}s limit. Please trim the video.`,
         );
         input.value = "";
       } else {
@@ -557,7 +579,7 @@
       ctx.strokeRect(x, y, w, h);
 
       ctx.font = "bold 13px 'Segoe UI', sans-serif";
-      const label = d.behaviour;
+      const label = d.no + " " + d.behaviour;
       const textWidth = ctx.measureText(label).width;
       const labelPadding = 4;
       const labelHeight = 18;
@@ -581,5 +603,219 @@
     }
   }
   window.addEventListener("resize", drawBboxOverlay);
+</script>
+
+<script>
+  document.getElementById("thresholdInputImage").value =
+    document.getElementById("thresholdSlider").value;
+  document.getElementById("thresholdInputVideo").value =
+    document.getElementById("thresholdSlider").value;
+  document
+    .getElementById("thresholdSlider")
+    .addEventListener("input", function () {
+      document.getElementById("thresholdInputImage").value = this.value;
+      document.getElementById("thresholdInputVideo").value = this.value;
+    });
+
+  let webcamSessionId = null;
+  let webcamIntervalId = null;
+
+  function getActiveLiveElement() {
+    const video = document.getElementById("liveCameraFeed");
+    const img = document.getElementById("ipCameraFeed");
+    if (!video.classList.contains("hidden"))
+      return { el: video, type: "video" };
+    if (!img.classList.contains("hidden")) return { el: img, type: "img" };
+    return null;
+  }
+
+  async function toggleWebcamDetection(enabled) {
+    if (!enabled) {
+      if (webcamIntervalId) clearInterval(webcamIntervalId);
+      webcamIntervalId = null;
+      document.getElementById("webcamOverlayCanvas").classList.add("hidden");
+      return;
+    }
+
+    const active = getActiveLiveElement();
+    if (!active) {
+      alert(
+        "Please turn on a webcam or IP camera before enabling Cheating Detection.",
+      );
+      document.getElementById("enableDetectionCheckbox").checked = false;
+      return;
+    }
+
+    const startRes = await fetch("{% url 'start_webcam' %}", {
+      method: "POST",
+      headers: { "X-CSRFToken": getCsrfToken() },
+    });
+    const startData = await startRes.json();
+    webcamSessionId = startData.session_id;
+
+    document.getElementById("webcamOverlayCanvas").classList.remove("hidden");
+    webcamIntervalId = setInterval(captureAndDetectFrame, 2000);
+  }
+
+  function getCsrfToken() {
+    const match = document.cookie.match(/csrftoken=([^;]+)/);
+    return match ? match[1] : "";
+  }
+
+  function captureFrameToBlob(activeEl) {
+    const canvas = document.createElement("canvas");
+    const w =
+      activeEl.type === "video"
+        ? activeEl.el.videoWidth
+        : activeEl.el.naturalWidth;
+    const h =
+      activeEl.type === "video"
+        ? activeEl.el.videoHeight
+        : activeEl.el.naturalHeight;
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext("2d").drawImage(activeEl.el, 0, 0, w, h);
+    return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+  }
+
+  async function captureAndDetectFrame() {
+    const active = getActiveLiveElement();
+    if (!active || !webcamSessionId) return;
+
+    const blob = await captureFrameToBlob(active);
+    const formData = new FormData();
+    formData.append("frame", blob, "frame.jpg");
+    formData.append("session_id", webcamSessionId);
+    formData.append(
+      "confidence_threshold",
+      document.getElementById("thresholdSlider").value,
+    );
+
+    const res = await fetch("{% url 'webcam_frame' %}", {
+      method: "POST",
+      headers: { "X-CSRFToken": getCsrfToken() },
+      body: formData,
+    });
+    const data = await res.json();
+    drawWebcamOverlay(active, data.detections);
+    prependLogRows(data.detections);
+  }
+
+  function drawWebcamOverlay(active, detections) {
+    const canvas = document.getElementById("webcamOverlayCanvas");
+    const container = canvas.parentElement;
+    const containerW = container.clientWidth;
+    const containerH = container.clientHeight;
+    canvas.width = containerW;
+    canvas.height = containerH;
+
+    const naturalW =
+      active.type === "video" ? active.el.videoWidth : active.el.naturalWidth;
+    const naturalH =
+      active.type === "video" ? active.el.videoHeight : active.el.naturalHeight;
+    if (!naturalW || !naturalH) return;
+
+    const containerRatio = containerW / containerH;
+    const imageRatio = naturalW / naturalH;
+    let renderW, renderH, offsetX, offsetY;
+    if (imageRatio > containerRatio) {
+      renderW = containerW;
+      renderH = containerW / imageRatio;
+      offsetX = 0;
+      offsetY = (containerH - renderH) / 2;
+    } else {
+      renderH = containerH;
+      renderW = containerH * imageRatio;
+      offsetX = (containerW - renderW) / 2;
+      offsetY = 0;
+    }
+    const scaleX = renderW / naturalW;
+    const scaleY = renderH / naturalH;
+
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    detections.forEach(function (d, i) {
+      const [xmin, ymin, xmax, ymax] = d.bbox;
+      const x = offsetX + xmin * scaleX;
+      const y = offsetY + ymin * scaleY;
+      const w = (xmax - xmin) * scaleX;
+      const h = (ymax - ymin) * scaleY;
+      const color = BEHAVIOUR_COLOR_MAP[d.behaviour_code] || "#ffffff";
+      const label = i + 1 + " " + d.behaviour;
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, w, h);
+
+      ctx.font = "bold 13px 'Segoe UI', sans-serif";
+      const textWidth = ctx.measureText(label).width;
+      const labelY = y - 18 < 0 ? y : y - 18;
+      ctx.fillStyle = color;
+      ctx.fillRect(x, labelY, textWidth + 8, 18);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(label, x + 4, labelY + 13);
+    });
+  }
+
+  const EYE_ICON =
+    '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+
+  function prependLogRows(detections) {
+    if (!detections.length) return;
+    const tbody = document.querySelector(".log-table tbody");
+
+    detections
+      .slice()
+      .reverse()
+      .forEach(function (d) {
+        const tr = document.createElement("tr");
+        if (d.behaviour_code === "phone_use") tr.classList.add("row-cheating");
+
+        tr.innerHTML =
+          "<td></td>" +
+          '<td><span class="badge badge-' +
+          d.behaviour_code +
+          '">' +
+          d.behaviour +
+          "</span></td>" +
+          '<td class="cell-time">' +
+          d.detected_time_display +
+          "</td>" +
+          "<td>" +
+          d.confidence_display +
+          "</td>" +
+          '<td><button type="button" class="btn-icon" title="View details"' +
+          ' data-img="' +
+          d.snapshot_url +
+          '"' +
+          ' data-time="' +
+          d.detected_time_display +
+          '"' +
+          ' data-behaviour="' +
+          d.behaviour +
+          '"' +
+          ' data-confidence="' +
+          d.confidence_display +
+          '"' +
+          ' data-coordinate="' +
+          d.coordinate +
+          '"' +
+          ' onclick="openDetailModal(this)">' +
+          EYE_ICON +
+          "</button></td>";
+
+        tbody.insertBefore(tr, tbody.firstChild);
+      });
+    renumberLogRows();
+  }
+
+  function renumberLogRows() {
+    document
+      .querySelectorAll(".log-table tbody td:first-child")
+      .forEach(function (cell, i) {
+        cell.textContent = i + 1;
+      });
+  }
 </script>
 {% endblock %}
